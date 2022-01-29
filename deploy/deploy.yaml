@@ -1,0 +1,182 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csi-example
+  namespace: kube-system
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: csi-example
+rules:
+- apiGroups:
+  - "*"
+  resources:
+  - "*"
+  verbs:
+  - "*"
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: csi-example
+subjects:
+- kind: ServiceAccount
+  name: csi-example
+  namespace: kube-system
+roleRef:
+ kind: ClusterRole
+ name: csi-example
+ apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: csi-example-node-driver-registrar
+  namespace: kube-system
+  labels:
+    app: csi-example-node-driver-registrar
+spec:
+  selector:
+    matchLabels:
+      app: csi-example-node
+  template:
+    metadata:
+      labels:
+        app: csi-example-node
+    spec:
+      serviceAccount: csi-example
+      hostNetwork: true
+      volumes:
+      - name: kubelet-dir
+        hostPath:
+          path: /var/lib/kubelet
+          type: Directory
+      - name: plugin-dir
+        hostPath:
+          path: /var/lib/kubelet/plugins/csi.example.golang/
+          type: DirectoryOrCreate
+      - name: registration-dir
+        hostPath:
+          path: /var/lib/kubelet/plugins_registry/
+          type: Directory
+      - name: device-dir
+        hostPath:
+          path: /dev
+          type: Directory
+      containers:
+      - name: driver-registrar
+        image: quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
+        args:
+        - --csi-address=$(ADDRESS)
+        - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
+        - --v=5
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "rm -rf /registration/csi.example.golang-reg.sock /csi/csi.sock"]
+        env:
+        - name: ADDRESS
+          value: /csi/csi.sock
+        - name: DRIVER_REG_SOCK_PATH
+          #value: /var/lib/kubelet/plugins_registry/csi.example.golang/csi.sock
+          value: /var/lib/kubelet/plugins/csi.example.golang/csi.sock
+        volumeMounts:
+        - name: plugin-dir
+          mountPath: /csi
+        - name: registration-dir
+          mountPath: /registration
+      - name: csi-example
+        image: 172.22.50.227/system_containers/csi-example:beta
+        imagePullPolicy: Always
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: EP
+          value: unix://csi/csi.sock
+        args:
+        - --endpoint=$(EP)
+        - --nodeid=$(NODE_NAME)
+        - --logtostderr
+        - --v=5
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: kubelet-dir
+          mountPath: /var/lib/kubelet
+          mountPropagation: "Bidirectional"
+        - name: plugin-dir
+          mountPath: /csi
+        - name: device-dir
+          mountPath: /dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-example
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      dep-app: csi-example
+  template:
+    metadata:
+      labels:
+        dep-app: csi-example
+    spec:
+      serviceAccount: csi-example
+      volumes:
+      - name: plugin-dir
+        hostPath:
+          path: /var/lib/kubelet/plugins/csi.example.golang/
+          type: DirectoryOrCreate
+      containers:
+      - name: cis-provisioner
+        image: quay.io/k8scsi/csi-provisioner:v1.6.0
+        args:
+        - --csi-address=$(ADDRESS)
+        - --v=5
+        - --feature-gates=Topology=True
+        env:
+        - name: ADDRESS
+          value: unix:///csi/csi.sock
+        volumeMounts:
+        - name: plugin-dir
+          mountPath: /csi
+      - name: csi-attacher
+        image: quay.io/k8scsi/csi-attacher:v2.1.1
+        args:
+        - --v=5
+        - --csi-address=$(ADDRESS)
+        env:
+        - name: ADDRESS
+          value: unix:///csi/csi.sock
+        volumeMounts:
+        - name: plugin-dir
+          mountPath: /csi
+      - name: csi-example
+        image: 172.22.50.227/system_containers/csi-example:beta
+        imagePullPolicy: Always
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: EP
+          value: unix://csi/csi.sock
+        args:
+        - --endpoint=$(EP)
+        - --nodeid=$(NODE_NAME)
+        - --logtostderr
+        - --v=5
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: plugin-dir
+          mountPath: /csi

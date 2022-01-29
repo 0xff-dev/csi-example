@@ -1,0 +1,8 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-example
+provisioner: csi.example.golang
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
